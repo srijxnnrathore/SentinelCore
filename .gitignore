@@ -1,0 +1,21 @@
+# Virtual Environment (Critical: never track this)
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Environment & Secrets
+.env
+
+# Editor & OS Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
