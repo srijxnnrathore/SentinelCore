@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -9,6 +10,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from src.core.config import settings
+
+logger = logging.getLogger("sentinelcore.db")
 
 # Production-grade bounded connection pool using asyncpg and AsyncAdaptedQueuePool
 engine = create_async_engine(
@@ -58,12 +61,12 @@ async def scoped_tenant_session(tenant_id: str) -> AsyncGenerator[AsyncSession, 
         if session.is_active:
             try:
                 await asyncio.shield(session.rollback())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error during session rollback: %s", exc)
         raise
     finally:
         # Ensure connection is closed/returned to pool under shield even upon cancellation
         try:
             await asyncio.shield(session.close())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error closing session: %s", exc)
