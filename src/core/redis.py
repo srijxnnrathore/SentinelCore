@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Optional
 from redis.asyncio import Redis
-from redis.asyncio.connection import ConnectionPool
+from redis.asyncio.connection import BlockingConnectionPool
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 from redis.exceptions import BusyLoadingError, ConnectionError, TimeoutError
@@ -12,7 +12,7 @@ logger = logging.getLogger("sentinelcore.redis")
 
 REDIS_URL = settings.REDIS_URL
 
-_redis_pool: Optional[ConnectionPool] = None
+_redis_pool: Optional[BlockingConnectionPool] = None
 _redis_client: Optional[Redis] = None
 _client_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -20,9 +20,10 @@ def get_redis_client() -> Redis:
     global _redis_client, _redis_pool, _client_loop
     current_loop = asyncio.get_running_loop()
     if _redis_client is None or _client_loop != current_loop:
-        _redis_pool = ConnectionPool.from_url(
+        _redis_pool = BlockingConnectionPool.from_url(
             REDIS_URL,
             max_connections=20,
+            timeout=5.0,
             health_check_interval=30,
             socket_timeout=3.0,
             socket_connect_timeout=3.0,
