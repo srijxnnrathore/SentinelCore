@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Optional
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.rate_limiter import RateLimiter
 from src.core.security import decode_token
@@ -51,7 +51,11 @@ async def get_auth_context(
     return AuthContext(tenant_id=tenant_id, actor_id=actor_id)
 
 async def get_db(
-    auth: AuthContext = Depends(get_auth_context)
+    request: Request,
+    auth: AuthContext = Depends(get_auth_context),
 ) -> AsyncGenerator[AsyncSession, None]:
-    async with scoped_tenant_session(auth.tenant_id) as session:
+    trace_id = None
+    if request:
+        trace_id = request.headers.get("traceparent") or request.headers.get("x-trace-id")
+    async with scoped_tenant_session(auth.tenant_id, trace_id=trace_id) as session:
         yield session
