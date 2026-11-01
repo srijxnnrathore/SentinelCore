@@ -1,9 +1,12 @@
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from src.core.config import settings
 from src.core.security import jwks_manager, create_access_token_rs256
 from src.db.session import engine
 from src.core.redis import close_redis_client
 from src.core.event_queue import security_event_queue
+
+settings.ENVIRONMENT = "test"
 
 TEST_KID = "sentinelcore-test-key-1"
 

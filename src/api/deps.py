@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.core.metrics import normalize_endpoint
 from src.core.rate_limiter import RateLimiter
 from src.core.security import decode_token
 from src.core.threat_detector import threat_detector
@@ -16,7 +17,8 @@ class AuthContext:
     actor_id: str
 
 async def get_auth_context(
-    authorization: Optional[str] = Header(None, description="Bearer JWT token")
+    request: Request,
+    authorization: Optional[str] = Header(None, description="Bearer JWT token"),
 ) -> AuthContext:
     if not authorization:
         raise HTTPException(
@@ -46,7 +48,8 @@ async def get_auth_context(
     await threat_detector.check_quarantine(tenant_id)
 
     # 2. Sliding-window rate limit check
-    await limiter.check(tenant_id)
+    endpoint = normalize_endpoint(request.url.path) if request else "/documents/"
+    await limiter.check(tenant_id, endpoint=endpoint)
 
     return AuthContext(tenant_id=tenant_id, actor_id=actor_id)
 

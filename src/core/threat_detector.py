@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import HTTPException, status
 from redis.commands.core import AsyncScript
+from src.core.metrics import THREAT_CIRCUIT_TRIPS_TOTAL
 from src.core.redis import get_redis_client
 
 # Atomic Threat Counter & Circuit Breaker with Self-Healing TTL
@@ -59,7 +60,7 @@ class ThreatDetector:
                 headers={"Retry-After": str(ttl if ttl > 0 else 60)},
             )
 
-    async def record_violation(self, tenant_id: str) -> None:
+    async def record_violation(self, tenant_id: str, event_type: str = "cross_tenant_probe") -> None:
         """
         Records an authorization violation. Automatically trips the circuit breaker
         if violations exceed the threshold within the sliding window.
@@ -71,10 +72,13 @@ class ThreatDetector:
         if self._script is None:
             self._script = client.register_script(LUA_RECORD_VIOLATION)
 
-        await self._script(
+        result = await self._script(
             keys=[violation_key, jail_key],
             args=[self.window_seconds, self.max_violations, self.jail_duration_seconds],
             client=client,
         )
+
+        if result and result[0] == 1:
+            THREAT_CIRCUIT_TRIPS_TOTAL.labels(event_type=event_type).inc()
 
 threat_detector = ThreatDetector()

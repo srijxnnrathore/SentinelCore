@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from src.api.documents import router as documents_router
 from src.core.event_queue import security_event_queue
+from src.core.metrics import PrometheusMetricsMiddleware, metrics_router
 from src.core.redis import close_redis_client, get_redis_client
 from src.db.session import engine
 
@@ -20,6 +21,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 1. Register Prometheus Metrics Middleware
+app.add_middleware(PrometheusMetricsMiddleware)
+
+# 2. Mount Prometheus Metrics Router
+app.include_router(metrics_router)
+
+# 3. Mount Application Routers
 app.include_router(documents_router, prefix="/documents", tags=["Documents"])
 
 @app.get("/health")

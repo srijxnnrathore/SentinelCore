@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import HTTPException, status
 from redis.commands.core import AsyncScript
+from src.core.metrics import RATE_LIMIT_DROPS_TOTAL
 from src.core.redis import get_redis_client
 
 # Single-Key Atomic Sliding Window with Redis Engine Clock Authority
@@ -57,7 +58,7 @@ class RateLimiter:
         self.window_seconds = 60
         self._script: Optional[AsyncScript] = None
 
-    async def check(self, tenant_id: str) -> None:
+    async def check(self, tenant_id: str, endpoint: str = "/documents/") -> None:
         client = get_redis_client()
         # Hash-tag key format ensures compatibility with single-node and cluster topologies
         key = f"rate:{{{tenant_id}}}"
@@ -75,6 +76,7 @@ class RateLimiter:
 
         if allowed == 0:
             retry_after = ttl if ttl > 0 else 1
+            RATE_LIMIT_DROPS_TOTAL.labels(endpoint=endpoint).inc()
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Rate limit exceeded. Too many requests.",
