@@ -105,7 +105,9 @@ ALTER FUNCTION public.check_cross_tenant_probe(uuid) OWNER TO sentinel_definer;
 GRANT CONNECT ON DATABASE sentinelcore TO sentinel_app;
 GRANT USAGE ON SCHEMA public TO sentinel_app, sentinel_definer;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenants TO sentinel_app;
+GRANT SELECT, INSERT ON TABLE tenants TO sentinel_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE tenants FROM sentinel_app;
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE documents TO sentinel_app;
 GRANT SELECT, INSERT ON TABLE audit_logs TO sentinel_app;
 

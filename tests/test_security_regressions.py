@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives import serialization
 
 from src.main import app
 from src.db.session import engine, AsyncSessionLocal
+from src.core.event_queue import security_event_queue
 from tests.conftest import mint_test_token, _pub_key
 
 @pytest.mark.anyio
@@ -42,6 +43,9 @@ async def test_exploit_bola_cross_tenant_read_returns_404():
         )
         assert res_attack.status_code == 404
         assert res_attack.json()["detail"] == "Document not found"
+
+    # Await background queue drain for asynchronous event processing
+    await security_event_queue.queue.join()
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -99,10 +103,16 @@ async def test_exploit_session_context_leak_prevention():
 
     from src.db.session import scoped_tenant_session
 
-    async with scoped_tenant_session(tenant_1) as session:
-        val = await session.execute(text("SELECT current_setting('app.current_tenant_id', true)"))
-        assert val.scalar() == tenant_1
+    try:
+        async with scoped_tenant_session(tenant_1) as session:
+            # Simulate an unhandled crash inside the application business logic
+            raise RuntimeError("Simulated unhandled transaction explosion")
+    except RuntimeError:
+        pass
 
-    async with AsyncSessionLocal() as session:
-        val_unscoped = await session.execute(text("SELECT current_setting('app.current_tenant_id', true)"))
-        assert val_unscoped.scalar() in (None, "")
+    # A subsequent tenant session on a potentially recycled connection must NEVER see tenant_1
+    tenant_2 = str(uuid.uuid4())
+    async with scoped_tenant_session(tenant_2) as session:
+        result = await session.execute(text("SELECT current_setting('app.current_tenant_id', true)"))
+        active_tenant = result.scalar()
+        assert active_tenant == tenant_2

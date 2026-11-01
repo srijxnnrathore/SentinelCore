@@ -56,9 +56,7 @@ jobs:
           bandit -r src/ -ll
 
       - name: Dependency Vulnerability Audit
-        run: |
-          # Audit dependencies against PyPA / OSV vulnerability databases
-          pip-audit --desc || true
+        run: pip-audit --desc --strict
 
       - name: Provision PostgreSQL Schema & RLS Policies
         run: |

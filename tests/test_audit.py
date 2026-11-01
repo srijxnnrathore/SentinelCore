@@ -6,6 +6,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from src.main import app
 from src.db.session import engine, AsyncSessionLocal
+from src.core.event_queue import security_event_queue
 from tests.conftest import mint_test_token
 
 @pytest.mark.anyio
@@ -30,6 +31,9 @@ async def test_audit_log_generation():
         )
         assert res.status_code == 201
         doc_id = res.json()["id"]
+
+    # Await background decoupled audit queue to drain
+    await security_event_queue.queue.join()
 
     # Verify that an audit record exists in the database
     async with AsyncSessionLocal() as session:

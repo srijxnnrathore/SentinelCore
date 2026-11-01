@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, ConfigDict
 import uuid
 from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 class DocumentCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
@@ -13,4 +14,4 @@ class DocumentResponse(BaseModel):
     tenant_id: uuid.UUID
     title: str
     content: str
-    created_at: datetime
+    created_at: Optional[datetime] = None

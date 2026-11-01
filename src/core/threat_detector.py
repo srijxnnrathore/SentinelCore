@@ -1,4 +1,6 @@
+from typing import Optional
 from fastapi import HTTPException, status
+from redis.commands.core import AsyncScript
 from src.core.redis import get_redis_client
 
 # Atomic Threat Counter & Circuit Breaker with Self-Healing TTL
@@ -35,11 +37,12 @@ class ThreatDetector:
         self,
         max_violations: int = 3,
         window_seconds: int = 30,
-        jail_duration_seconds: int = 300
+        jail_duration_seconds: int = 300,
     ):
         self.max_violations = max_violations
         self.window_seconds = window_seconds
         self.jail_duration_seconds = jail_duration_seconds
+        self._script: Optional[AsyncScript] = None
 
     async def check_quarantine(self, tenant_id: str) -> None:
         """
@@ -53,7 +56,7 @@ class ThreatDetector:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Security violation: Account temporarily quarantined due to suspicious probing activity.",
-                headers={"Retry-After": str(ttl if ttl > 0 else 60)}
+                headers={"Retry-After": str(ttl if ttl > 0 else 60)},
             )
 
     async def record_violation(self, tenant_id: str) -> None:
@@ -65,11 +68,13 @@ class ThreatDetector:
         violation_key = f"violations:{tenant_id}"
         jail_key = f"jail:{tenant_id}"
 
-        # Register script against current event loop's active client
-        script = client.register_script(LUA_RECORD_VIOLATION)
-        await script(
+        if self._script is None:
+            self._script = client.register_script(LUA_RECORD_VIOLATION)
+
+        await self._script(
             keys=[violation_key, jail_key],
-            args=[self.window_seconds, self.max_violations, self.jail_duration_seconds]
+            args=[self.window_seconds, self.max_violations, self.jail_duration_seconds],
+            client=client,
         )
 
 threat_detector = ThreatDetector()

@@ -1,15 +1,10 @@
-from fastapi.testclient import TestClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 from src.main import app
 
-# Create a test client that can talk to our FastAPI app without running a real server
-client = TestClient(app)
-
-def test_health_check_is_alive():
-    # 1. Send a GET request to our endpoint
-    response = client.get("/health/live")
-    
-    # 2. Assert (verify) the HTTP status code is 200 (Success)
-    assert response.status_code == 200
-    
-    # 3. Assert the JSON response matches exactly what we expect
-    assert response.json() == {"status": "alive"}
+@pytest.mark.anyio
+async def test_health_check_is_alive():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/health/live")
+        assert response.status_code == 200
+        assert response.json() == {"status": "alive"}

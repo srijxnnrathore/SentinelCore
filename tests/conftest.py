@@ -1,6 +1,9 @@
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from src.core.security import jwks_manager, create_access_token_rs256
+from src.db.session import engine
+from src.core.redis import close_redis_client
+from src.core.event_queue import security_event_queue
 
 TEST_KID = "sentinelcore-test-key-1"
 
@@ -24,6 +27,12 @@ def test_private_key():
 def anyio_backend():
     return "asyncio"
 
+@pytest.fixture(autouse=True)
+async def cleanup_test_state():
+    yield
+    await security_event_queue.stop(drain_timeout=1.0)
+    await engine.dispose()
+    await close_redis_client()
 
 def mint_test_token(tenant_id: str, subject: str = "test-subject") -> str:
     return create_access_token_rs256(

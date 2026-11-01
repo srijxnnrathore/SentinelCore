@@ -1,24 +1,13 @@
 import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import AuthContext, get_auth_context, get_db
-from src.core.audit import log_security_event
-from src.core.threat_detector import threat_detector
+from src.core.event_queue import SecurityEvent, security_event_queue
+from src.schemas.document import DocumentCreate, DocumentResponse
 
 router = APIRouter()
-
-class DocumentCreate(BaseModel):
-    title: str
-    content: str
-
-class DocumentResponse(BaseModel):
-    id: uuid.UUID
-    tenant_id: uuid.UUID
-    title: str
-    content: str
 
 @router.post("/", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def create_document(
@@ -31,7 +20,7 @@ async def create_document(
         text("""
             INSERT INTO documents (tenant_id, title, content)
             VALUES (:tenant_id, :title, :content)
-            RETURNING id, tenant_id, title, content
+            RETURNING id, tenant_id, title, content, created_at
         """),
         {
             "tenant_id": auth.tenant_id,
@@ -41,13 +30,16 @@ async def create_document(
     )
     doc = result.mappings().one()
 
-    await log_security_event(
-        actor_id=auth.actor_id,
-        action="DOCUMENT_CREATE",
-        status="SUCCESS",
-        resource_id=str(doc["id"]),
-        ip_address=request.client.host if request.client else "127.0.0.1",
-        tenant_id=auth.tenant_id,
+    security_event_queue.push(
+        SecurityEvent(
+            tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
+            action="DOCUMENT_CREATE",
+            status="SUCCESS",
+            resource_id=str(doc["id"]),
+            ip_address=request.client.host if request.client else "127.0.0.1",
+            record_threat=False,
+        )
     )
     return doc
 
@@ -58,17 +50,20 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        text("SELECT id, tenant_id, title, content FROM documents")
+        text("SELECT id, tenant_id, title, content, created_at FROM documents")
     )
     docs = result.mappings().all()
 
-    await log_security_event(
-        actor_id=auth.actor_id,
-        action="DOCUMENT_LIST",
-        status="SUCCESS",
-        resource_id=None,
-        ip_address=request.client.host if request.client else "127.0.0.1",
-        tenant_id=auth.tenant_id,
+    security_event_queue.push(
+        SecurityEvent(
+            tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
+            action="DOCUMENT_LIST",
+            status="SUCCESS",
+            resource_id=None,
+            ip_address=request.client.host if request.client else "127.0.0.1",
+            record_threat=False,
+        )
     )
     return docs
 
@@ -80,7 +75,7 @@ async def get_document(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        text("SELECT id, tenant_id, title, content FROM documents WHERE id = :id"),
+        text("SELECT id, tenant_id, title, content, created_at FROM documents WHERE id = :id"),
         {"id": document_id},
     )
     doc = result.mappings().one_or_none()
@@ -90,19 +85,27 @@ async def get_document(
             text("SELECT public.check_cross_tenant_probe(:id)"),
             {"id": document_id},
         )
-        is_cross_tenant = probe_result.scalar() or False
+        is_cross_tenant = bool(probe_result.scalar())
 
-        # Threat tracking: record violation on missing or cross-tenant probes
-        await threat_detector.record_violation(auth.tenant_id)
-        action = "DOCUMENT_READ_DENIED" if is_cross_tenant else "DOCUMENT_NOT_FOUND"
+        if is_cross_tenant:
+            action = "DOCUMENT_READ_DENIED"
+            event_status = "DENIED"
+            record_threat = True
+        else:
+            action = "DOCUMENT_NOT_FOUND"
+            event_status = "NOT_FOUND"
+            record_threat = False
 
-        await log_security_event(
-            actor_id=auth.actor_id,
-            action=action,
-            status="DENIED" if is_cross_tenant else "NOT_FOUND",
-            resource_id=str(document_id),
-            ip_address=request.client.host if request.client else "127.0.0.1",
-            tenant_id=auth.tenant_id,
+        security_event_queue.push(
+            SecurityEvent(
+                tenant_id=auth.tenant_id,
+                actor_id=auth.actor_id,
+                action=action,
+                status=event_status,
+                resource_id=str(document_id),
+                ip_address=request.client.host if request.client else "127.0.0.1",
+                record_threat=record_threat,
+            )
         )
 
         raise HTTPException(
@@ -110,12 +113,15 @@ async def get_document(
             detail="Document not found",
         )
 
-    await log_security_event(
-        actor_id=auth.actor_id,
-        action="DOCUMENT_READ",
-        status="SUCCESS",
-        resource_id=str(doc["id"]),
-        ip_address=request.client.host if request.client else "127.0.0.1",
-        tenant_id=auth.tenant_id,
+    security_event_queue.push(
+        SecurityEvent(
+            tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
+            action="DOCUMENT_READ",
+            status="SUCCESS",
+            resource_id=str(doc["id"]),
+            ip_address=request.client.host if request.client else "127.0.0.1",
+            record_threat=False,
+        )
     )
     return doc
