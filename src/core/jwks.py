@@ -6,6 +6,7 @@ import httpx
 import jwt
 from jwt.algorithms import RSAAlgorithm
 from src.core.config import settings
+from src.core.transport import SSRFProtectedTransport
 
 KID_REGEX = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 
@@ -17,6 +18,7 @@ class JWKSManager:
         min_refresh_interval: Optional[float] = None,
         cache_ttl: float = 3600.0,
         max_stale_age: float = 86400.0,
+        transport: Optional[httpx.AsyncHTTPTransport] = None,
     ):
         self.jwks_url = jwks_url
         self.cooldown_seconds = (
@@ -26,6 +28,7 @@ class JWKSManager:
         )
         self.cache_ttl = cache_ttl
         self.max_stale_age = max_stale_age
+        self.transport = transport or SSRFProtectedTransport()
 
         self._keys: Dict[str, Any] = {}
         # Stores verified absent kids: kid -> expiry_ts
@@ -108,7 +111,11 @@ class JWKSManager:
                 resp.raise_for_status()
                 data = resp.json()
             else:
-                async with httpx.AsyncClient(timeout=3.0, follow_redirects=False) as default_client:
+                async with httpx.AsyncClient(
+                    transport=self.transport,
+                    timeout=3.0,
+                    follow_redirects=False,
+                ) as default_client:
                     resp = await default_client.get(self.jwks_url)
                     resp.raise_for_status()
                     data = resp.json()
@@ -132,6 +139,8 @@ class JWKSManager:
             self._last_success_ts = now
             self._verified_missing_kids.clear()
             return True
+        except PermissionError:
+            raise
         except Exception:
             if (now - self._last_success_ts) > self.max_stale_age:
                 self._keys.clear()
@@ -141,4 +150,8 @@ class JWKSManager:
         self._keys = keys_dict
         self._last_success_ts = time.monotonic()
 
-jwks_manager = JWKSManager()
+
+EnterpriseJWKSVerifier = JWKSManager
+jwks_manager = EnterpriseJWKSVerifier()
+
+__all__ = ["JWKSManager", "EnterpriseJWKSVerifier", "jwks_manager"]
