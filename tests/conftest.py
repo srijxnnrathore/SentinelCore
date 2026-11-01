@@ -24,6 +24,7 @@ def test_private_key():
 def anyio_backend():
     return "asyncio"
 
+
 def mint_test_token(tenant_id: str, subject: str = "test-subject") -> str:
     return create_access_token_rs256(
         tenant_id=tenant_id,
