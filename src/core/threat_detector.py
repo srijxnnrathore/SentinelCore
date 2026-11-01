@@ -1,8 +1,12 @@
-import time
 from fastapi import HTTPException, status
 from src.core.redis import get_redis_client
 
-# Atomic Lua: increment violation count, apply sliding window, and conditionally jail
+# Atomic Threat Counter & Circuit Breaker with Self-Healing TTL
+# KEYS[1]: violations:{tenant_id}
+# KEYS[2]: jail:{tenant_id}
+# ARGV[1]: window_seconds (int)
+# ARGV[2]: max_violations (int)
+# ARGV[3]: jail_duration_seconds (int)
 LUA_RECORD_VIOLATION = """
 local violation_key = KEYS[1]
 local jail_key = KEYS[2]
@@ -11,17 +15,19 @@ local max_violations = tonumber(ARGV[2])
 local jail_duration = tonumber(ARGV[3])
 
 local count = redis.call('INCR', violation_key)
-if count == 1 then
+local ttl = redis.call('TTL', violation_key)
+
+if count == 1 or ttl == -1 then
     redis.call('EXPIRE', violation_key, window)
 end
 
 if count >= max_violations then
     redis.call('SET', jail_key, 'QUARANTINED', 'EX', jail_duration)
     redis.call('DEL', violation_key)
-    return 1
+    return {1, count, jail_duration}
 end
 
-return 0
+return {0, count, 0}
 """
 
 class ThreatDetector:
@@ -59,6 +65,7 @@ class ThreatDetector:
         violation_key = f"violations:{tenant_id}"
         jail_key = f"jail:{tenant_id}"
 
+        # Register script against current event loop's active client
         script = client.register_script(LUA_RECORD_VIOLATION)
         await script(
             keys=[violation_key, jail_key],
