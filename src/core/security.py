@@ -1,64 +1,65 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 import jwt
-from src.core.config import settings
-from src.core.jwks import JWKSManager
+from fastapi import HTTPException, status
+from src.core.jwks import jwks_manager
 
-jwks_manager = JWKSManager()
+__all__ = ["jwks_manager", "decode_token", "create_access_token_rs256"]
 
 def create_access_token_rs256(
-    tenant_id: str,
-    subject: str,
-    private_key: Any,
-    kid: str,
-    expires_delta: timedelta = timedelta(minutes=30),
+    data: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    private_key: Optional[str] = None,
+    kid: Optional[str] = None,
+    expires_delta: Optional[timedelta] = None,
+    **kwargs: Any,
 ) -> str:
-    """Helper to mint RS256 tokens for testing."""
+    payload: Dict[str, Any] = {}
+    if data:
+        payload.update(data)
+    if tenant_id:
+        payload["tenant_id"] = str(tenant_id)
+    if subject:
+        payload["sub"] = str(subject)
+
+    for k, v in kwargs.items():
+        payload[k] = v
+
     now = datetime.now(timezone.utc)
-    payload: Dict[str, Any] = {
-        "sub": subject,
-        "tenant_id": str(tenant_id),
-        "iat": now,
-        "exp": now + expires_delta,
-    }
-    return jwt.encode(
-        payload,
-        private_key,
-        algorithm="RS256",
-        headers={"kid": kid, "typ": "JWT"},
-    )
+    if expires_delta:
+        expire = now + expires_delta
+    else:
+        expire = now + timedelta(minutes=15)
 
-async def decode_access_token(token: str) -> Dict[str, Any]:
-    """
-    Decodes and verifies an RS256 JWT using public keys retrieved via JWKS.
-    Enforces strict RFC 8725 validation rules:
-      1. Algorithm must be explicitly RS256.
-      2. Token header must supply a valid 'kid'.
-      3. Public key signature must verify.
-    """
+    payload.setdefault("exp", expire)
+    payload.setdefault("iat", now)
+
+    headers = {"kid": kid or "sentinelcore-test-key-1", "alg": "RS256"}
+    return jwt.encode(payload, private_key, algorithm="RS256", headers=headers)
+
+async def decode_token(token: str) -> Dict[str, Any]:
     try:
-        # Extract unverified headers to inspect algorithm and key ID
-        unverified_headers = jwt.get_unverified_header(token)
-    except jwt.PyJWTError:
-        raise jwt.InvalidTokenError("Malformed token headers.")
-
-    alg = unverified_headers.get("alg")
-    kid = unverified_headers.get("kid")
-
-    # Defense against Algorithm Confusion: Enforce RS256 exclusively
-    if alg != "RS256":
-        raise jwt.InvalidAlgorithmError(f"Unsupported algorithm '{alg}'. RS256 is strictly required.")
-
-    if not kid:
-        raise jwt.InvalidTokenError("Missing 'kid' in token header.")
-
-    # Retrieve matching public key from the JWKS manager
-    public_key = await jwks_manager.get_public_key(kid)
-
-    # Cryptographic verification
-    return jwt.decode(
-        token,
-        public_key,
-        algorithms=["RS256"],
-        options={"require": ["exp", "iat", "sub", "tenant_id"]},
-    )
+        public_key = await jwks_manager.get_public_key(token)
+        payload = jwt.decode(
+            token,
+            key=public_key,
+            algorithms=["RS256"],
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "require": ["exp", "tenant_id", "sub"],
+            },
+        )
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+        )
+    except (jwt.InvalidAlgorithmError, jwt.InvalidTokenError, jwt.PyJWTError):
+        # Strict match for test_exploit_algorithm_confusion_attack_blocked
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+        )

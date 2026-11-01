@@ -1,14 +1,16 @@
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from sqlalchemy import text
-
-APP_DATABASE_URL = "postgresql+asyncpg://sentinel_app:app_secure_password@localhost:5432/sentinelcore"
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+from src.core.config import settings
 
 engine = create_async_engine(
-    APP_DATABASE_URL,
-    echo=False,
+    settings.DATABASE_URL,
     poolclass=NullPool,
 )
 
@@ -20,12 +22,16 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
+def _reset_connection_gucs(dbapi_conn, connection_record, reset_state) -> None:
+    if not reset_state.terminate_only:
+        dbapi_conn.rollback()
+
 @asynccontextmanager
 async def scoped_tenant_session(tenant_id: str) -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         async with session.begin():
             await session.execute(
-                text("SELECT set_config('app.current_tenant_id', :t_id, true)"),
-                {"t_id": str(tenant_id)}
+                text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
             )
             yield session

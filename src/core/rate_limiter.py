@@ -1,45 +1,52 @@
-import time
 from fastapi import HTTPException, status
 from src.core.redis import get_redis_client
 
-# Sliding Window Counter with Self-Healing TTL
-# KEYS[1]: rate:{tenant_id}:{curr_bucket}
-# KEYS[2]: rate:{tenant_id}:{prev_bucket}
+# Single-Key Atomic Sliding Window with Redis Engine Clock Authority
+# KEYS[1]: rate:{tenant_id}  (Hash-tagged to single slot)
 # ARGV[1]: limit (int)
 # ARGV[2]: window_seconds (int)
-# ARGV[3]: elapsed_in_window (int)
 LUA_SLIDING_WINDOW_RATE_LIMIT = """
-local curr_key = KEYS[1]
-local prev_key = KEYS[2]
 local limit = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
-local elapsed = tonumber(ARGV[3])
 
-local curr_count = tonumber(redis.call('GET', curr_key) or '0')
-local prev_count = tonumber(redis.call('GET', prev_key) or '0')
+-- Authoritative time from Redis server clock
+local rtime = redis.call('TIME')
+local now_sec = tonumber(rtime[1])
+local curr_window = math.floor(now_sec / window)
+local elapsed = now_sec % window
 
--- Weighted sliding window approximation:
 local weight = (window - elapsed) / window
-local estimated_count = math.floor(prev_count * weight + curr_count)
+local data = redis.call('HMGET', KEYS[1], 'w_curr', 'c_curr', 'c_prev')
 
-if estimated_count >= limit then
-    local ttl = redis.call('TTL', curr_key)
-    if ttl <= 0 then
-        ttl = window - elapsed
-        if ttl <= 0 then ttl = 1 end
-        redis.call('EXPIRE', curr_key, window * 2)
+local stored_w = tonumber(data[1])
+local c_curr = tonumber(data[2]) or 0
+local c_prev = tonumber(data[3]) or 0
+
+if stored_w == nil then
+    c_curr = 0
+    c_prev = 0
+elseif stored_w == curr_window - 1 then
+    c_prev = c_curr
+    c_curr = 0
+elseif stored_w < curr_window - 1 then
+    c_prev = 0
+    c_curr = 0
+end
+
+local estimated = math.floor(c_prev * weight + c_curr)
+
+if estimated >= limit then
+    local pttl = redis.call('PTTL', KEYS[1])
+    if pttl < 0 then
+        redis.call('EXPIRE', KEYS[1], window * 2)
     end
-    return {0, estimated_count, ttl}
+    return {0, estimated, window - elapsed}
 end
 
-local new_curr = redis.call('INCR', curr_key)
-local ttl = redis.call('TTL', curr_key)
-if new_curr == 1 or ttl == -1 then
-    redis.call('EXPIRE', curr_key, window * 2)
-    ttl = window * 2
-end
-
-return {1, estimated_count + 1, window - elapsed}
+c_curr = c_curr + 1
+redis.call('HSET', KEYS[1], 'w_curr', curr_window, 'c_curr', c_curr, 'c_prev', c_prev)
+redis.call('EXPIRE', KEYS[1], window * 2)
+return {1, estimated + 1, 0}
 """
 
 class RateLimiter:
@@ -49,19 +56,13 @@ class RateLimiter:
 
     async def check(self, tenant_id: str) -> None:
         client = get_redis_client()
-        now = time.time()
-        curr_bucket = int(now // self.window_seconds)
-        prev_bucket = curr_bucket - 1
-        elapsed = int(now % self.window_seconds)
+        # Hash-tag key format ensures compatibility with single-node and cluster topologies
+        key = f"rate:{{{tenant_id}}}"
 
-        curr_key = f"rate:{tenant_id}:{curr_bucket}"
-        prev_key = f"rate:{tenant_id}:{prev_bucket}"
-
-        # Register script against current event loop's active client
         script = client.register_script(LUA_SLIDING_WINDOW_RATE_LIMIT)
         result = await script(
-            keys=[curr_key, prev_key],
-            args=[self.limit, self.window_seconds, elapsed]
+            keys=[key],
+            args=[self.limit, self.window_seconds]
         )
 
         allowed, count, ttl = result[0], result[1], result[2]
